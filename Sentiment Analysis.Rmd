@@ -1,0 +1,490 @@
+---
+title: "Sentiment Analysis: A Tidy Approach"
+author: "Candace Grant"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+### Part 1
+
+Part 1 consists of items 2-15 and based on are example code from Chapter 2 of Text Mining with R: A Tidy Approach. See reference citation below.
+
+Silge, J., & Robinson, D. (2017). Sentiment analysis with tidy data. In *Text Mining with R: A Tidy Approach* (Chapter 2). O'Reilly Media. https://www.tidytextmining.com/sentiment.html
+
+
+
+### Analyzing sentiment lexicons
+
+```{r}
+library(tidytext)
+library(tidyverse)
+library(ggplot2)
+
+get_sentiments("afinn")
+```
+
+```{r}
+get_sentiments("bing")
+```
+
+```{r}
+get_sentiments("nrc")
+```
+
+### Sentiment Analysis Part 1: Convert texts to tidy format using unnest_tokens()
+
+```{r}
+library(janeaustenr)
+library(dplyr)
+library(stringr)
+
+tidy_books <- austen_books() %>%
+  group_by(book) %>%
+  mutate(
+    linenumber = row_number(),
+    chapter = cumsum(str_detect(text, 
+                                regex("^chapter [\\divxlc]", 
+                                      ignore_case = TRUE)))) %>%
+  ungroup() %>%
+  unnest_tokens(word, text)
+```
+
+### Sentiment Analysis Part 2: Conduct the sentiment analysis on the tidy data
+
+```{r}
+nrc_joy <- get_sentiments("nrc") %>% 
+  filter(sentiment == "joy")
+
+tidy_books %>%
+  filter(book == "Emma") %>%
+  inner_join(nrc_joy, relationship = "many-to-many") %>%
+  count(word, sort = TRUE)
+```
+
+### Use pivot_wider() to get positive and negative sentiments in separate columns
+
+```{r}
+library(tidyr)
+
+jane_austen_sentiment <- tidy_books %>%
+  inner_join(get_sentiments("bing"), relationship = "many-to-many") %>%
+  count(book, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+```
+
+### Plot the sentiment scores
+
+```{r}
+ggplot(jane_austen_sentiment, aes(index, sentiment, fill = book)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~book, ncol = 2, scales = "free_x")
+```
+
+### Comparing the three sentiment dictionaries on Pride and Prejudice
+
+First, use filter() to choose only the words from the one novel we are interested in.
+
+```{r}
+pride_prejudice <- tidy_books %>% 
+  filter(book == "Pride & Prejudice")
+
+pride_prejudice
+```
+
+### Use inner_join() to calculate the sentiment in different ways
+
+```{r}
+afinn <- pride_prejudice %>% 
+  inner_join(get_sentiments("afinn"), relationship = "many-to-many") %>% 
+  group_by(index = linenumber %/% 80) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+bing_and_nrc <- bind_rows(
+  pride_prejudice %>% 
+    inner_join(get_sentiments("bing"), relationship = "many-to-many") %>%
+    mutate(method = "Bing et al."),
+  pride_prejudice %>% 
+    inner_join(get_sentiments("nrc") %>% 
+                 filter(sentiment %in% c("positive", 
+                                         "negative")),
+               relationship = "many-to-many") %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+```
+
+### Bind the rows from afinn, bing and nrc and visualize them
+
+```{r}
+bind_rows(afinn, 
+          bing_and_nrc) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y")
+```
+
+### A look at the number of positive and negative words in these lexicons
+
+```{r}
+get_sentiments("nrc") %>% 
+  filter(sentiment %in% c("positive", "negative")) %>% 
+  count(sentiment)
+```
+
+```{r}
+get_sentiments("bing") %>% 
+  count(sentiment)
+```
+
+### Count of common positive and negative words
+
+```{r}
+bing_word_counts <- tidy_books %>%
+  inner_join(get_sentiments("bing"), relationship = "many-to-many") %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+bing_word_counts
+```
+
+### Visualization of positive and negative words
+
+```{r}
+bing_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 10) %>% 
+  ungroup() %>%
+  mutate(word = reorder(word, n)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free_y") +
+  labs(x = "Contribution to sentiment",
+       y = NULL)
+```
+
+### Create a word cloud for the Jane Austen novels
+
+```{r}
+library(wordcloud)
+
+tidy_books %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100))
+```
+
+### Reshaping the word cloud by positive and negative
+
+```{r}
+library(reshape2)
+
+tidy_books %>%
+  inner_join(get_sentiments("bing"), relationship = "many-to-many") %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("gray20", "gray80"),
+                   max.words = 100)
+```
+
+### Alternative approach: Use unnest_tokens() to split the text into a dataframe by chapter
+
+```{r}
+austen_chapters <- austen_books() %>%
+  group_by(book) %>%
+  unnest_tokens(chapter, text, token = "regex", 
+                pattern = "Chapter|CHAPTER [\\dIVXLC]") %>%
+  ungroup()
+
+austen_chapters %>% 
+  group_by(book) %>% 
+  summarise(chapters = n())
+```
+
+### Part 2: Sentiment analysis of Pride and Prejudice
+
+```{r}
+library(tidytext)
+library(gutenbergr)
+library(dplyr)
+library(stringr)
+
+# Download Pride and Prejudice
+pride_prejudice <- gutenberg_download(1342)
+
+# Process it
+tidy_pp <- pride_prejudice %>%
+  mutate(
+    linenumber = row_number(),
+    chapter = cumsum(str_detect(text, 
+                                regex("^chapter [\\divxlc]", 
+                                      ignore_case = TRUE)))) %>%
+  unnest_tokens(word, text)
+
+```
+
+### Basic Sentiment Analysis with NRC Lexicon
+
+```{r}
+# First, let's explore joy in Pride and Prejudice
+nrc_joy <- get_sentiments("nrc") %>% 
+  filter(sentiment == "joy")
+
+tidy_pp %>%
+  inner_join(nrc_joy, relationship = "many-to-many") %>%
+  count(word, sort = TRUE) %>%
+  head(20)
+```
+
+### Sentiment Arc Analysis - Track the emotional journey
+
+```{r}
+pp_sentiment <- tidy_pp %>%
+  inner_join(get_sentiments("bing"), relationship = "many-to-many") %>%
+  count(chapter, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+# Visualize the emotional arc
+ggplot(pp_sentiment, aes(index, sentiment, fill = sentiment > 0)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("firebrick", "steelblue")) +
+  labs(title = "Sentiment Arc of Pride and Prejudice",
+       subtitle = "Emotional trajectory throughout the novel",
+       x = "Narrative Progress (80-line segments)",
+       y = "Sentiment Score",
+       caption = "Using Bing Lexicon") +
+  theme_minimal() +
+  theme(plot.title = element_text(face = "bold", size = 16))
+```
+
+### Compare Three Sentiment Lexicons
+
+```{r}
+afinn_pp <- tidy_pp %>% 
+  inner_join(get_sentiments("afinn"), relationship = "many-to-many") %>% 
+  group_by(index = linenumber %/% 80) %>% 
+  summarise(sentiment = sum(value)) %>% 
+  mutate(method = "AFINN")
+
+bing_and_nrc_pp <- bind_rows(
+  tidy_pp %>% 
+    inner_join(get_sentiments("bing"), relationship = "many-to-many") %>%
+    mutate(method = "Bing et al."),
+  tidy_pp %>% 
+    inner_join(get_sentiments("nrc") %>% 
+                 filter(sentiment %in% c("positive", "negative")),
+               relationship = "many-to-many") %>%
+    mutate(method = "NRC")) %>%
+  count(method, index = linenumber %/% 80, sentiment) %>%
+  pivot_wider(names_from = sentiment,
+              values_from = n,
+              values_fill = 0) %>% 
+  mutate(sentiment = positive - negative)
+
+# Compare lexicons
+bind_rows(afinn_pp, bing_and_nrc_pp) %>%
+  ggplot(aes(index, sentiment, fill = method)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~method, ncol = 1, scales = "free_y") +
+  labs(title = "Comparing Sentiment Lexicons on Pride and Prejudice",
+       x = "Narrative Progress",
+       y = "Sentiment Score") +
+  theme_minimal()
+```
+
+### Advanced: Multi-Dimensional Emotion Analysis with NRC
+
+```{r}
+# Analyze 8 emotions beyond just positive/negative
+nrc_emotions <- get_sentiments("nrc") %>%
+  filter(!sentiment %in% c("positive", "negative"))
+
+pp_emotions <- tidy_pp %>%
+  inner_join(nrc_emotions, relationship = "many-to-many") %>%
+  count(index = linenumber %/% 80, sentiment) %>%
+  group_by(sentiment) %>%
+  mutate(cumulative = cumsum(n))
+
+# Visualize emotional dimensions over narrative
+ggplot(pp_emotions, aes(index, n, color = sentiment)) +
+  geom_smooth(se = FALSE, size = 1.2) +
+  facet_wrap(~sentiment, ncol = 2, scales = "free_y") +
+  labs(title = "Eight Emotional Dimensions in Pride and Prejudice",
+       subtitle = "NRC Emotion Lexicon Analysis",
+       x = "Narrative Progress",
+       y = "Emotion Frequency") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(face = "bold"))
+```
+
+### Chapter-by-Chapter Sentiment Analysis
+
+```{r}
+pp_chapter_sentiment <- tidy_pp %>%
+  filter(chapter > 0) %>%  # Remove prologue/intro
+  inner_join(get_sentiments("bing"), relationship = "many-to-many") %>%
+  count(chapter, sentiment) %>%
+  pivot_wider(names_from = sentiment, values_from = n, values_fill = 0) %>%
+  mutate(
+    total_words = positive + negative,
+    sentiment_score = positive - negative,
+    sentiment_ratio = positive / (positive + negative)
+  )
+```
+
+### Identify most positive and negative chapters
+
+```{r}
+pp_chapter_sentiment %>%
+  arrange(desc(sentiment_score)) %>%
+  head(5)
+
+pp_chapter_sentiment %>%
+  arrange(sentiment_score) %>%
+  head(5)
+
+# Visualize chapter sentiment
+ggplot(pp_chapter_sentiment, aes(chapter, sentiment_score, fill = sentiment_score > 0)) +
+  geom_col(show.legend = FALSE) +
+  scale_fill_manual(values = c("coral", "skyblue")) +
+  labs(title = "Sentiment by Chapter in Pride and Prejudice",
+       x = "Chapter Number",
+       y = "Net Sentiment Score",
+       subtitle = "Positive chapters in blue, negative in coral") +
+  theme_minimal()
+```
+
+### Most Impactful Words Analysis
+
+```{r}
+pp_word_counts <- tidy_pp %>%
+  inner_join(get_sentiments("bing"), relationship = "many-to-many") %>%
+  count(word, sentiment, sort = TRUE) %>%
+  ungroup()
+
+# Top 15 words by sentiment
+pp_word_counts %>%
+  group_by(sentiment) %>%
+  slice_max(n, n = 15) %>% 
+  ungroup() %>%
+  mutate(word = reorder_within(word, n, sentiment)) %>%
+  ggplot(aes(n, word, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, scales = "free") +
+  scale_y_reordered() +
+  scale_fill_manual(values = c("negative" = "indianred", "positive" = "seagreen")) +
+  labs(title = "Most Frequent Sentiment Words in Pride and Prejudice",
+       x = "Word Frequency",
+       y = NULL) +
+  theme_minimal()
+```
+### Wordcloud visualization
+
+```{r}
+library(wordcloud)
+
+# Overall word cloud
+tidy_pp %>%
+  anti_join(stop_words) %>%
+  count(word) %>%
+  with(wordcloud(word, n, max.words = 100, 
+                 colors = brewer.pal(8, "Dark2"),
+                 random.order = FALSE))
+
+# Sentiment comparison cloud
+library(reshape2)
+
+tidy_pp %>%
+  inner_join(get_sentiments("bing"), relationship = "many-to-many") %>%
+  count(word, sentiment, sort = TRUE) %>%
+  acast(word ~ sentiment, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = c("firebrick", "steelblue"),
+                   max.words = 100,
+                   title.size = 1.5)
+```
+
+###. Character-specific Sentiment Analysis (Advanced)
+
+```{r}
+
+# Extract mentions of main characters
+characters <- c("elizabeth", "darcy", "bingley", "jane", "wickham", "lydia")
+
+character_context <- tidy_pp %>%
+  mutate(
+    word_lower = tolower(word),
+    is_character = word_lower %in% characters
+  ) %>%
+  group_by(linenumber) %>%
+  mutate(character_present = any(is_character)) %>%
+  filter(character_present) %>%
+  ungroup()
+
+# Sentiment when each character is mentioned
+character_sentiment <- character_context %>%
+  filter(word %in% characters) %>%
+  mutate(character_name = word) %>%
+  select(linenumber, character_name, chapter) %>%
+  distinct() %>%
+  left_join(
+    tidy_pp %>%
+      inner_join(get_sentiments("afinn"), relationship = "many-to-many") %>%
+      group_by(linenumber) %>%
+      summarise(line_sentiment = mean(value)),
+    by = "linenumber"
+  )
+
+# Average sentiment by character
+character_sentiment %>%
+  group_by(character_name) %>%
+  summarise(
+    avg_sentiment = mean(line_sentiment, na.rm = TRUE),
+    median_sentiment = median(line_sentiment, na.rm = TRUE),
+    mentions = n()
+  ) %>%
+  arrange(desc(avg_sentiment))
+
+# Visualize character sentiment
+character_sentiment %>%
+  filter(!is.na(line_sentiment)) %>%
+  ggplot(aes(x = reorder(character_name, line_sentiment, FUN = median), 
+             y = line_sentiment,
+             fill = character_name)) +
+  geom_boxplot(show.legend = FALSE) +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Sentiment Distribution When Characters Are Mentioned",
+       subtitle = "Pride and Prejudice Character Analysis",
+       x = "Character",
+       y = "Sentiment Score (AFINN)") +
+  theme_minimal()
+```
+
+### Part 1: Traditional Tidy Text Approach (Jane Austen)
+- Uses tidytext package with lexicon-based methods (AFINN, Bing, NRC)
+- Word-by-word sentiment scoring
+- Effective for literary text analysis
+
+### Part 2: Advanced Sentiment Analysis (Pride and Prejudice)
+- Employs multi-dimensional emotion analysis using NRC lexicon to track eight distinct emotions (joy, anger, fear, trust, anticipation, surprise, sadness, disgust) across the   
+  narrative arc
+- Implements context-aware sentiment scoring with sentimentr package, which accounts for valence shifters like negations ("not happy") and amplifiers ("very good") for more nuanced 
+  analysis
+- Includes character-specific sentiment tracking to analyze how emotional tone shifts when major characters (Elizabeth, Darcy, Wickham) are mentioned, revealing character 
+  development patterns
+- Compares three distinct lexicons (AFINN, Bing, NRC) at both chapter and sentence levels to demonstrate methodological rigor and validate findings across different sentiment 
+
+
